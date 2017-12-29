@@ -106,3 +106,35 @@ def batch2sparse(batch):
             max_l = max(max_l, y + 1)
     dense_shape = [len(batch), max_l]
     return indices, values, dense_shape
+
+
+# 具体数据格式参见以下链接
+# https://github.com/jonrein/tensorflow_CTC_example/blob/master/bdlstm_train.py
+
+def load_npy(mfcc_path, target_path):
+    """load data in npy format
+    Args:
+        mfcc_path: path to mfcc file
+        target_path: path to target npy file
+    Returns:
+        x: mfcc
+        target: target
+        seq_len: true sequence length of mfcc before padding
+    """
+    x = []
+    target = []
+    seq_len = []
+    for p in os.listdir(mfcc_path):
+        t_p = os.path.join(mfcc_path, p)
+        mfcc = np.transpose(np.load(t_p))
+        seq_len.append(len(mfcc))
+        x.append(mfcc)
+
+    for p in os.listdir(target_path):
+        t_p = os.path.join(target_path, p)
+        t = np.load(t_p)
+        target.append(t)
+    max_len = max(seq_len)
+    for i in range(len(x)):
+        x[i] = np.concatenate((x[i], np.zeros([max_len - len(x[i]), 26])), axis=0)
+    return x, target, seq_len
