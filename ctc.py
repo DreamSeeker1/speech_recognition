@@ -3,9 +3,9 @@ import data_utils
 
 batch_size = 128
 lr = 0.001
-epoch_num = 100
+epoch_num = 2000
 display_step = 10
-hidden_size = 64
+hidden_size = 128
 
 graph = tf.Graph()
 with graph.as_default():
