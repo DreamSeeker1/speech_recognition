@@ -1,9 +1,11 @@
 import tensorflow as tf
 import os
-import re
 import scipy.io.wavfile as sio
-import numpy as np
 import python_speech_features
+from sphfile import SPHFile
+import re
+import pickle
+import numpy as np
 
 max_length = 13554
 num2word = ['zero', 'one', 'two', 'three', 'four',
@@ -138,3 +140,152 @@ def load_npy(mfcc_path, target_path):
     for i in range(len(x)):
         x[i] = np.concatenate((x[i], np.zeros([max_len - len(x[i]), 26])), axis=0)
     return x, target, seq_len
+
+
+def convert_wav(path):
+    """convert nist sphere file to wav file
+    Args:
+        path: path to dialect folder in timit directory
+    """
+    speaker_list = os.listdir(path)
+    speaker_list = list(map(lambda x: os.path.join(path, x), speaker_list))
+    for speaker in speaker_list:
+        # list of files in a speaker folder
+        sentence_list = list(map(lambda x: os.path.join(speaker, x), os.listdir(speaker)))
+        # a folder to store the converted files
+        wav_folder = os.path.join(speaker, 'wav_files')
+        if os.path.exists(wav_folder):
+            continue
+        os.makedirs(wav_folder)
+        for f in sentence_list:
+            if re.match(r'.*\.WAV', f):
+                name = f.split(os.path.sep)[-1]
+                sph = SPHFile(f)
+                sph.write_wav(os.path.join(wav_folder, name))
+
+
+def build_sentence_dict(path, dict_path):
+    """build dictionary mapping sentence to sentence type and number
+    Args:
+        path: path to prompts.txt
+        dict_path: path to store the dictionary
+    """
+
+    tmp_set = set([])
+    for i in range(26):
+        tmp_set.add(chr(97 + i))
+    # blank
+    tmp_set.add(' ')
+    # prime
+    tmp_set.add('\'')
+    # unknown
+    tmp_set.add('U')
+
+    chr2idx = {}
+    idx2chr = {}
+
+    for idx, ch in enumerate(tmp_set):
+        idx2chr[idx] = ch
+        chr2idx[ch] = idx
+
+    sentence_dict = {}
+
+    with open(path) as f:
+        for line in f:
+            m = re.match(r'(.*)\((.*)\)', line)
+            if m:
+                content = m.group(1).lower()
+                idx = m.group(2)
+                if idx in sentence_dict:
+                    continue
+                else:
+                    seq = []
+                    u_idx = chr2idx['U']
+                    for ch in content:
+                        seq.append(chr2idx.get(ch, u_idx))
+                    sentence_dict[idx] = seq
+    with open(dict_path, 'wb') as f:
+        pickle.dump((chr2idx, idx2chr, sentence_dict), f)
+
+
+def get_dataset_timit(path_list, path_dict):
+    """prepare the dataset for training
+    Args:
+        path_list: list of path to dialect folder in timit directory
+        path_dict: path to sentence dict
+    Returns:
+        x: mfcc of wav files
+        y: target sequence
+    """
+    speaker_list = []
+    for path in path_list:
+        speaker_list += list(map(lambda _: os.path.join(path, _), os.listdir(path)))
+    with open(path_dict, 'rb') as f:
+        chr2idx, idx2chr, sentence_dict = pickle.load(f)
+    x = []
+    y = []
+    seq_length = []
+    for speaker in speaker_list:
+        wav_path = os.path.join(speaker, 'wav_files')
+        wav_files = os.listdir(wav_path)
+        for t in wav_files:
+            file_name = re.match(r'(.*).WAV', t).group(1)
+            content = sio.read(os.path.join(wav_path, t))
+            sample_rate = content[0]
+            mfcc = python_speech_features.mfcc(content[1], sample_rate)
+            x.append(mfcc)
+            y.append(sentence_dict[file_name.lower()])
+            seq_length.append(len(mfcc))
+    return x, y, seq_length
+
+
+def get_batch(batchsize, x, y, seq_length):
+    """generate batch given x, y and seq_length
+    Args:
+        batchsize: batchsize
+        x: mfcc feature sequence
+        y: target sequence
+        seq_length: sequence length of the mfcc features
+    Yields:
+        res_x: padded mfcc batch
+        sparse: sparse representation of target sequence
+        t_seq: true sequence of the input sequence
+    """
+    pad = [0. for _ in range(len(x[0][0]))]
+    for i in range(len(x) // batchsize):
+        t_x = x[i * batchsize: (i + 1) * batchsize]
+        t_y = y[i * batchsize: (i + 1) * batchsize]
+        t_seq = seq_length[i * batchsize: (i + 1) * batchsize]
+        max_l = max(t_seq)
+        res_x = []
+        for mfcc in t_x:
+            mfcc = np.concatenate((mfcc, np.tile(pad, (max_l - len(mfcc), 1))), axis=0)
+            res_x.append(mfcc)
+        sparse = batch2sparse(t_y)
+        yield res_x, sparse, t_seq
+
+    t_x = x[-batchsize:]
+    t_y = y[-batchsize:]
+    t_seq = seq_length[-batchsize:]
+    max_l = max(t_seq)
+    res_x = []
+    for mfcc in t_x:
+        mfcc = np.concatenate((mfcc, np.tile(pad, (max_l - len(mfcc), 1))), axis=0)
+        res_x.append(mfcc)
+    sparse = batch2sparse(t_y)
+    yield res_x, sparse, t_seq
+
+
+def to_sentence(token_seq, idx2chr):
+    """convert the sentence sequence in tokens to letters
+    Args:
+        token_seq: token sequence
+        idx2chr: dictionary mapping tokens to letters
+    Returns:
+        sentence: reconstructed sentence
+    """
+    res = []
+    for i in token_seq:
+        res.append(idx2chr[i])
+    sentence = ''.join(res).strip('v')
+    return sentence
