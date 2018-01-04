@@ -17,18 +17,18 @@ with open(chr2idx_dict_path, 'rb') as f:
     chr2idx, idx2chr, sentence_dict = pickle.load(f)
 
 lr = 0.001
-epoch_num = 1000
+epoch_num = 500
 display_step = 10
 hidden_size = 512
 n_classes = len(chr2idx) + 1
-batchsize = 128
+batchsize = 256
 mfcc_feature_num = 13
 
 graph = tf.Graph()
 with graph.as_default():
-    x = tf.placeholder(shape=[None, None, mfcc_feature_num], dtype=tf.float32)
-    target = tf.sparse_placeholder(dtype=tf.int32)
-    sequence_length = tf.placeholder(shape=(None,), dtype=tf.int32)
+    x = tf.placeholder(shape=[None, None, mfcc_feature_num], dtype=tf.float32, name='mfcc')
+    target = tf.sparse_placeholder(dtype=tf.int32, name='target')
+    sequence_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='sequence_length')
 
     with tf.name_scope('rnn'):
         cell = [tf.nn.rnn_cell.LSTMCell(hidden_size),
@@ -46,26 +46,33 @@ with graph.as_default():
             tf.nn.ctc_loss(labels=target, inputs=logits, sequence_length=sequence_length,
                            time_major=False))
 
-    with tf.name_scope("pred"):
+    with tf.name_scope("make_prediction"):
         pred = tf.nn.ctc_beam_search_decoder(tf.transpose(logits, perm=[1, 0, 2]),
                                              sequence_length=sequence_length,
                                              beam_width=100)[0][0]
+    with tf.name_scope("cal_edit_distance"):
         error = tf.reduce_mean(tf.edit_distance(pred, tf.to_int64(target), normalize=False))
 
     opt = tf.train.AdamOptimizer(lr).minimize(loss)
+    tf.summary.scalar('edit_distance', error)
+    tf.summary.scalar('ctc_loss', loss)
 
 with tf.Session(graph=graph) as sess:
+    writer = tf.summary.FileWriter('./tmp/summary', graph=graph)
+    merged = tf.summary.merge_all()
+    saver = tf.train.Saver()
     init = tf.global_variables_initializer()
     sess.run(init)
     epoch = 1
     step = 1
     while epoch <= epoch_num:
         for data in data_utils.get_batch(batchsize, training_set[0], training_set[1], training_set[2]):
-            _, l, err = sess.run([opt, loss, error], {
+            _, l, err, mgd = sess.run([opt, loss, error, merged], {
                 x: data[0],
                 target: data[1],
                 sequence_length: data[2]
             })
+            writer.add_summary(mgd, global_step=step)
             print("epoch:{:>4}, step:{:>4}, loss:{:>10.4f}, edit_distance:{:>8.2f}".format(epoch, step, l, err))
             if step % display_step == 0:
                 p = sess.run(pred, {
@@ -80,3 +87,6 @@ with tf.Session(graph=graph) as sess:
                 print('predicted:{}'.format(data_utils.to_sentence(dense_pred[0], idx2chr)))
             step += 1
         epoch += 1
+        
+        if epoch % 10 == 0:
+            saver.save(sess, './tmp/checkpoint/model.ckpt', global_step=step)
