@@ -6,12 +6,12 @@ import data_utils
 import pickle
 import os
 
-data_path = './data/TIMIT/TRAIN/'
-dr_path = list(map(lambda _: os.path.join(data_path, _), os.listdir(data_path)))
-training_set = data_utils.get_dataset_timit(dr_path, './data/sentence.pkl')
-
 # path to chr2idx dictionary
 chr2idx_dict_path = './data/sentence.pkl'
+
+data_path = './data/TIMIT/TRAIN/'
+dr_path = list(map(lambda _: os.path.join(data_path, _), os.listdir(data_path)))
+training_set = data_utils.get_dataset_timit(dr_path, chr2idx_dict_path)
 
 with open(chr2idx_dict_path, 'rb') as f:
     chr2idx, idx2chr, sentence_dict = pickle.load(f)
@@ -19,28 +19,31 @@ with open(chr2idx_dict_path, 'rb') as f:
 lr = 0.001
 epoch_num = 500
 display_step = 10
-hidden_size = 512
+hidden_size = 128
 n_classes = len(chr2idx) + 1
-batchsize = 256
+batchsize = 128
 mfcc_feature_num = 13
+isTrain = True
+cell_nums = 5
 
 graph = tf.Graph()
 with graph.as_default():
     x = tf.placeholder(shape=[None, None, mfcc_feature_num], dtype=tf.float32, name='mfcc')
     target = tf.sparse_placeholder(dtype=tf.int32, name='target')
     sequence_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='sequence_length')
-
+    epoch_g = tf.Variable(1, False, name='epoch')
+    step_g = tf.Variable(1, False, name='step')
     with tf.name_scope('rnn'):
-        cell = [tf.nn.rnn_cell.LSTMCell(hidden_size),
-                tf.nn.rnn_cell.LSTMCell(hidden_size, num_proj=n_classes)]
-        rnn_cell = tf.nn.rnn_cell.MultiRNNCell(cell)
-        initial_state = rnn_cell.zero_state(tf.shape(x)[0], dtype=tf.float32)
-        outputs, states = tf.nn.dynamic_rnn(rnn_cell, x,
-                                            initial_state=initial_state,
-                                            dtype=tf.float32)
-
-        logits = outputs
-
+        cell_fw = [tf.nn.rnn_cell.LSTMCell(hidden_size) for _ in range(cell_nums - 1)] + [
+            tf.nn.rnn_cell.LSTMCell(hidden_size, num_proj=n_classes)]
+        cell_bw = [tf.nn.rnn_cell.LSTMCell(hidden_size) for _ in range(cell_nums - 1)] + [
+            tf.nn.rnn_cell.LSTMCell(hidden_size, num_proj=n_classes)]
+        rnn_cell_fw = tf.nn.rnn_cell.MultiRNNCell(cell_fw)
+        rnn_cell_bw = tf.nn.rnn_cell.MultiRNNCell(cell_bw)
+        outputs, states = tf.nn.bidirectional_dynamic_rnn(rnn_cell_fw, rnn_cell_bw, x, sequence_length=sequence_length,
+                                                          dtype=tf.float32)
+        logits = tf.concat(outputs, 2)
+        logits = tf.layers.dense(logits, n_classes)
     with tf.name_scope("cal_loss"):
         loss = tf.reduce_mean(
             tf.nn.ctc_loss(labels=target, inputs=logits, sequence_length=sequence_length,
@@ -58,35 +61,57 @@ with graph.as_default():
     tf.summary.scalar('ctc_loss', loss)
 
 with tf.Session(graph=graph) as sess:
-    writer = tf.summary.FileWriter('./tmp/summary', graph=graph)
-    merged = tf.summary.merge_all()
-    saver = tf.train.Saver()
-    init = tf.global_variables_initializer()
-    sess.run(init)
-    epoch = 1
-    step = 1
-    while epoch <= epoch_num:
-        for data in data_utils.get_batch(batchsize, training_set[0], training_set[1], training_set[2]):
-            _, l, err, mgd = sess.run([opt, loss, error, merged], {
-                x: data[0],
-                target: data[1],
-                sequence_length: data[2]
-            })
-            writer.add_summary(mgd, global_step=step)
-            print("epoch:{:>4}, step:{:>4}, loss:{:>10.4f}, edit_distance:{:>8.2f}".format(epoch, step, l, err))
-            if step % display_step == 0:
-                p = sess.run(pred, {
+    if isTrain:
+        writer = tf.summary.FileWriter('./tmp/summary', graph=graph)
+        merged = tf.summary.merge_all()
+        saver = tf.train.Saver()
+        try:
+            ckpt_path = tf.train.latest_checkpoint('./tmp/checkpoint/')
+            saver.restore(sess, ckpt_path)
+        except ValueError:
+            init = tf.global_variables_initializer()
+            sess.run(init)
+        epoch = sess.run(epoch_g)
+        while epoch <= epoch_num:
+            for data in data_utils.get_batch(batchsize, training_set[0], training_set[1], training_set[2]):
+                _, l, err, mgd = sess.run([opt, loss, error, merged], {
                     x: data[0],
                     target: data[1],
                     sequence_length: data[2]
                 })
-                # convert prediction result from sparse tensor to dense tensor
-                dense_pred = sess.run(tf.sparse_to_dense(p[0], p[2], p[1]))
-                dense_target = sess.run(tf.sparse_to_dense(data[1][0], data[1][2], data[1][1]))
-                print('original:{}'.format(data_utils.to_sentence(dense_target[0], idx2chr)))
-                print('predicted:{}'.format(data_utils.to_sentence(dense_pred[0], idx2chr)))
-            step += 1
-        epoch += 1
-        
-        if epoch % 10 == 0:
-            saver.save(sess, './tmp/checkpoint/model.ckpt', global_step=step)
+                step = sess.run(step_g)
+                writer.add_summary(mgd, global_step=step)
+                print("epoch:{:>4}, step:{:>4}, loss:{:>10.4f}, edit_distance:{:>8.2f}".format(epoch, step, l, err))
+                if step % display_step == 0:
+                    p = sess.run(pred, {
+                        x: data[0],
+                        target: data[1],
+                        sequence_length: data[2]
+                    })
+                    # convert prediction result from sparse tensor to dense tensor
+                    dense_pred = sess.run(tf.sparse_to_dense(p[0], p[2], p[1]))
+                    dense_target = sess.run(tf.sparse_to_dense(data[1][0], data[1][2], data[1][1]))
+                    print('original:{}'.format(data_utils.to_sentence(dense_target[0], idx2chr)))
+                    print('predicted:{}'.format(data_utils.to_sentence(dense_pred[0], idx2chr)))
+                sess.run(step_g.assign_add(1))
+            sess.run(epoch_g.assign_add(1))
+            epoch = sess.run(epoch_g)
+            if epoch % 5 == 0:
+                step = sess.run(step_g)
+                saver.save(sess, './tmp/checkpoint/model.ckpt', global_step=step)
+    else:
+        saver = tf.train.Saver()
+        ckpt_path = tf.train.latest_checkpoint('./tmp/checkpoint/')
+        saver.restore(sess, ckpt_path)
+        for data in data_utils.get_batch(batchsize, training_set[0], training_set[1], training_set[2]):
+            _, l, err, p = sess.run([opt, loss, error, pred], {
+                x: data[0],
+                target: data[1],
+                sequence_length: data[2]
+            })
+            print("loss:{:>10.4f}, edit_distance:{:>8.2f}".format(l, err))
+            # convert prediction result from sparse tensor to dense tensor
+            dense_pred = sess.run(tf.sparse_to_dense(p[0], p[2], p[1]))
+            dense_target = sess.run(tf.sparse_to_dense(data[1][0], data[1][2], data[1][1]))
+            print('original:{}'.format(data_utils.to_sentence(dense_target[0], idx2chr)))
+            print('predicted:{}'.format(data_utils.to_sentence(dense_pred[0], idx2chr)))
