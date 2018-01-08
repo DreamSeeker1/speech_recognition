@@ -17,14 +17,16 @@ with open(chr2idx_dict_path, 'rb') as f:
     chr2idx, idx2chr, sentence_dict = pickle.load(f)
 
 lr = 0.001
-epoch_num = 500
+epoch_num = 1000
 display_step = 10
-hidden_size = 128
+hidden_size = 256
 n_classes = len(chr2idx) + 1
-batchsize = 128
+batchsize = 64
 mfcc_feature_num = 13
 isTrain = True
-cell_nums = 5
+cell_nums = 3
+RNN_Cell = tf.nn.rnn_cell.GRUCell
+momentum = 0.99
 
 graph = tf.Graph()
 with graph.as_default():
@@ -34,10 +36,8 @@ with graph.as_default():
     epoch_g = tf.Variable(1, False, name='epoch')
     step_g = tf.Variable(1, False, name='step')
     with tf.name_scope('rnn'):
-        cell_fw = [tf.nn.rnn_cell.LSTMCell(hidden_size) for _ in range(cell_nums - 1)] + [
-            tf.nn.rnn_cell.LSTMCell(hidden_size, num_proj=n_classes)]
-        cell_bw = [tf.nn.rnn_cell.LSTMCell(hidden_size) for _ in range(cell_nums - 1)] + [
-            tf.nn.rnn_cell.LSTMCell(hidden_size, num_proj=n_classes)]
+        cell_fw = [RNN_Cell(hidden_size) for _ in range(cell_nums)]
+        cell_bw = [RNN_Cell(hidden_size) for _ in range(cell_nums)]
         rnn_cell_fw = tf.nn.rnn_cell.MultiRNNCell(cell_fw)
         rnn_cell_bw = tf.nn.rnn_cell.MultiRNNCell(cell_bw)
         outputs, states = tf.nn.bidirectional_dynamic_rnn(rnn_cell_fw, rnn_cell_bw, x, sequence_length=sequence_length,
