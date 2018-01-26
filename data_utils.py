@@ -241,5 +241,5 @@ def to_sentence(token_seq, idx2chr):
     res = []
     for i in token_seq:
         res.append(idx2chr[i])
-    sentence = ''.join(res).strip('v')
+    sentence = ''.join(res).strip(idx2chr[0])
     return sentence

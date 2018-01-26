@@ -19,29 +19,35 @@ with open(chr2idx_dict_path, 'rb') as f:
 lr = 0.001
 epoch_num = 1000
 display_step = 10
-hidden_size = 256
+hidden_size = 128
 n_classes = len(chr2idx) + 1
-batchsize = 64
+batchsize = 128
 mfcc_feature_num = 13
 isTrain = True
-cell_nums = 3
+cell_nums = 2
 RNN_Cell = tf.nn.rnn_cell.GRUCell
 momentum = 0.99
 
 graph = tf.Graph()
 with graph.as_default():
     x = tf.placeholder(shape=[None, None, mfcc_feature_num], dtype=tf.float32, name='mfcc')
+    x_expand = tf.expand_dims(x, 3)
     target = tf.sparse_placeholder(dtype=tf.int32, name='target')
     sequence_length = tf.placeholder(shape=(None,), dtype=tf.int32, name='sequence_length')
     epoch_g = tf.Variable(1, False, name='epoch')
     step_g = tf.Variable(1, False, name='step')
+    with tf.name_scope('conv_layer'):
+        conv1 = tf.layers.conv2d(x_expand, filters=4, kernel_size=3, padding='same', activation=tf.nn.leaky_relu)
+        conv2 = tf.layers.conv2d(conv1, filters=8, kernel_size=3, padding='same', activation=tf.nn.leaky_relu)
+        conv_shape = tf.shape(conv2)
+        conv_out = tf.reshape(conv2, (conv_shape[0], conv_shape[1], 13 * 8))
     with tf.name_scope('rnn'):
         cell_fw = [RNN_Cell(hidden_size) for _ in range(cell_nums)]
         cell_bw = [RNN_Cell(hidden_size) for _ in range(cell_nums)]
         rnn_cell_fw = tf.nn.rnn_cell.MultiRNNCell(cell_fw)
         rnn_cell_bw = tf.nn.rnn_cell.MultiRNNCell(cell_bw)
-        outputs, states = tf.nn.bidirectional_dynamic_rnn(rnn_cell_fw, rnn_cell_bw, x, sequence_length=sequence_length,
-                                                          dtype=tf.float32)
+        outputs, states = tf.nn.bidirectional_dynamic_rnn(rnn_cell_fw, rnn_cell_bw, conv_out,
+                                                          sequence_length=sequence_length, dtype=tf.float32)
         logits = tf.concat(outputs, 2)
         logits = tf.layers.dense(logits, n_classes)
     with tf.name_scope("cal_loss"):
